@@ -53,6 +53,7 @@ final class TracingConsumer<K, V> implements Consumer<K, V> {
   final SamplerFunction<MessagingRequest> sampler;
   final Injector<KafkaConsumerRequest> injector;
   final String remoteServiceName;
+  final boolean newTraceOnReceive;
   // replicate org.apache.kafka.clients.consumer.internals.NoOpConsumerRebalanceListener behaviour
   static final ConsumerRebalanceListener NO_OP_CONSUMER_REBALANCE_LISTENER =
     new ConsumerRebalanceListener() {
@@ -71,6 +72,7 @@ final class TracingConsumer<K, V> implements Consumer<K, V> {
     this.sampler = kafkaTracing.consumerSampler;
     this.injector = kafkaTracing.consumerInjector;
     this.remoteServiceName = kafkaTracing.remoteServiceName;
+    this.newTraceOnReceive = kafkaTracing.messagingTracing.newTraceOnReceive();
   }
 
   // Do not use @Override annotation to avoid compatibility issue version < 2.0
@@ -112,7 +114,9 @@ final class TracingConsumer<K, V> implements Consumer<K, V> {
           }
           injector.inject(span.context(), request);
         } else { // we extracted request-scoped data, so cannot share a consumer span.
-          Span span = kafkaTracing.nextMessagingSpan(sampler, request, extracted);
+          Span span = newTraceOnReceive ?
+              kafkaTracing.newMessagingTrace(sampler, request, extracted) :
+              kafkaTracing.nextMessagingSpan(sampler, request, extracted);
           if (!span.isNoop()) {
             setConsumerSpan(topic, span);
             // incur timestamp overhead only once
