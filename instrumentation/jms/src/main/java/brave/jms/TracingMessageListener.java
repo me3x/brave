@@ -22,11 +22,13 @@ import brave.propagation.TraceContext.Extractor;
 import brave.propagation.TraceContext.Injector;
 import brave.propagation.TraceContextOrSamplingFlags;
 import brave.sampler.SamplerFunction;
+import javax.jms.BytesMessage;
 import javax.jms.Message;
 import javax.jms.MessageListener;
 
 import static brave.Span.Kind.CONSUMER;
 import static brave.internal.Throwables.propagateIfFatal;
+import static brave.jms.JmsTracing.log;
 import static brave.jms.MessageParser.destination;
 
 /**
@@ -89,9 +91,39 @@ final class TracingMessageListener implements MessageListener {
 
     MessageConsumerRequest request = new MessageConsumerRequest(message, destination(message));
 
+    // Workaround for #967 bug related to ActiveMQBytesMessage JMS 1.1 implementation where properties cannot
+    // be overwritten. This workaround recreates the message to set it on write-more, so properties
+    // update is allowed.
+    // This conditional code should be removed when new ActiveMQ client release fixes https://issues.apache.org/jira/browse/AMQ-7291
+    if (message instanceof BytesMessage &&
+        message.getClass().getName().equals("org.apache.activemq.command.ActiveMQBytesMessage")) {
+      BytesMessage bytesMessage = (BytesMessage) message;
+      try {
+        byte[] body = new byte[(int) bytesMessage.getBodyLength()];
+        bytesMessage.readBytes(body);
+        bytesMessage.clearBody();
+        bytesMessage.writeBytes(body);
+      } catch (Throwable t) {
+        propagateIfFatal(t);
+        log(t, "error recreating bytes message {0}", message, null);
+      }
+    } // end of initialization of workaround
+
     TraceContextOrSamplingFlags extracted =
       jmsTracing.extractAndClearProperties(extractor, request, message);
     Span consumerSpan = jmsTracing.nextMessagingSpan(sampler, request, extracted);
+
+    // Continuation of Workaround for #967 bug.
+    // This conditional code should be removed when new ActiveMQ client release fixes https://issues.apache.org/jira/browse/AMQ-7291
+    if (message instanceof BytesMessage &&
+        message.getClass().getName().equals("org.apache.activemq.command.ActiveMQBytesMessage")) {
+      try {
+        ((BytesMessage) message).reset();
+      } catch (Throwable t) {
+        propagateIfFatal(t);
+        log(t, "error setting recreated bytes message {0} to read-only mode", message, null);
+      }
+    } // end of workaround
 
     // JMS has no visibility of the incoming message, which incidentally could be local!
     consumerSpan.kind(CONSUMER).name("receive");

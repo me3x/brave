@@ -16,11 +16,12 @@ package brave.jms;
 import brave.messaging.MessagingRuleSampler;
 import brave.messaging.MessagingTracing;
 import brave.sampler.Sampler;
+import javax.jms.BytesMessage;
 import javax.jms.JMSConsumer;
 import javax.jms.JMSContext;
-import javax.jms.JMSException;
 import javax.jms.JMSProducer;
 import javax.jms.Message;
+import javax.jms.TextMessage;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -29,6 +30,7 @@ import org.junit.rules.TestName;
 import zipkin2.Span;
 
 import static brave.jms.MessagePropagation.GETTER;
+import static brave.jms.MessagePropagation.SETTER;
 import static brave.messaging.MessagingRequestMatchers.operationEquals;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -41,6 +43,8 @@ public class ITTracingJMSConsumer extends JmsTest {
   JMSProducer producer;
   JMSConsumer consumer;
   JMSContext context;
+  TextMessage message;
+  BytesMessage bytesMessage;
 
   @Before public void setup() {
     context = jms.newContext();
@@ -98,22 +102,23 @@ public class ITTracingJMSConsumer extends JmsTest {
   }
 
   @Test public void messageListener_resumesTrace() throws Exception {
-    messageListener_resumesTrace(() -> producer.send(jms.queue, "foo"));
+    messageListener_resumesTrace(() -> producer.send(jms.queue, message));
   }
 
   @Test public void messageListener_resumesTrace_bytes() throws Exception {
-    messageListener_resumesTrace(() -> producer.send(jms.queue, new byte[] {1, 2, 3, 4}));
+    messageListener_resumesTrace(() -> producer.send(jms.queue, bytesMessage));
   }
 
   void messageListener_resumesTrace(Runnable send) throws Exception {
+    final Message[] msgs = {null};
     consumer.setMessageListener(m -> {
       // clearing headers ensures later work doesn't try to use the old parent
       String b3 = GETTER.get(m, "b3");
       tracing.tracer().currentSpanCustomizer().tag("b3", String.valueOf(b3 != null));
+      msgs[0] = m;
     });
 
-    String parentId = "463ac35c9f6413ad";
-    producer.setProperty("b3", parentId + "-" + parentId + "-1");
+    String parentId = resetB3PropertyToIncludeParentId(jms);
     send.run();
 
     Span consumerSpan = takeSpan(), listenerSpan = takeSpan();
@@ -122,6 +127,7 @@ public class ITTracingJMSConsumer extends JmsTest {
     assertThat(listenerSpan.tags())
       .hasSize(1) // no redundant copy of consumer tags
       .containsEntry("b3", "false"); // b3 header not leaked to listener
+    assertThat(msgs[0].getBooleanProperty("custom")).isTrue(); // msg properties are kept
   }
 
   @Test public void receive_startsNewTrace() throws Exception {
@@ -143,16 +149,15 @@ public class ITTracingJMSConsumer extends JmsTest {
   }
 
   @Test public void receive_resumesTrace() throws Exception {
-    receiveResumesTrace(() -> producer.send(jms.queue, "foo"));
+    receiveResumesTrace(() -> producer.send(jms.queue, message));
   }
 
   @Test public void receive_resumesTrace_bytes() throws Exception {
-    receiveResumesTrace(() -> producer.send(jms.queue, new byte[] {1, 2, 3, 4}));
+    receiveResumesTrace(() -> producer.send(jms.queue, bytesMessage));
   }
 
-  void receiveResumesTrace(Runnable send) throws InterruptedException, JMSException {
-    String parentId = "463ac35c9f6413ad";
-    producer.setProperty("b3", parentId + "-" + parentId + "-1");
+  void receiveResumesTrace(Runnable send) throws Exception {
+    String parentId = resetB3PropertyToIncludeParentId(jms);
     send.run();
 
     Message received = consumer.receive();
@@ -161,6 +166,7 @@ public class ITTracingJMSConsumer extends JmsTest {
 
     assertThat(received.getStringProperty("b3"))
       .isEqualTo(parentId + "-" + consumerSpan.id() + "-1");
+    assertThat(received.getBooleanProperty("custom")).isTrue(); // msg properties are kept
   }
 
   @Test public void receive_customSampler() throws Exception {
@@ -176,5 +182,24 @@ public class ITTracingJMSConsumer extends JmsTest {
       .endsWith("-0");
 
     // @After will also check that the consumer was not sampled
+  }
+
+  String resetB3PropertyToIncludeParentId(JmsTestRule jms) throws Exception {
+    message = jms.newMessage("foo");
+    bytesMessage = jms.newBytesMessage("foo");
+    String parentId = "463ac35c9f6413ad";
+    SETTER.put(message, "b3", parentId + "-" + parentId + "-1");
+    message.setBooleanProperty("custom", true);
+    SETTER.put(bytesMessage, "b3", parentId + "-" + parentId + "-1");
+    bytesMessage.setBooleanProperty("custom", true);
+    lockMessages();
+    return parentId;
+  }
+
+  void lockMessages() throws Exception {
+    // this forces us to handle JMS write concerns!
+    jms.setReadOnlyProperties(message, true);
+    jms.setReadOnlyProperties(bytesMessage, true);
+    bytesMessage.reset();
   }
 }

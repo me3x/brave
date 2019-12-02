@@ -30,11 +30,6 @@ public class ITJms_2_0_TracingMessageConsumer extends ITJms_1_1_TracingMessageCo
     return new ArtemisJmsTestRule(testName);
   }
 
-  // Inability to encode "b3" on a received BytesMessage only applies to ActiveMQ 5.x
-  @Test public void receive_resumesTrace_bytes() throws Exception {
-    receive_resumesTrace(() -> messageProducer.send(bytesMessage), messageConsumer);
-  }
-
   @Test public void receive_customSampler() throws Exception {
     queueReceiver.close();
 

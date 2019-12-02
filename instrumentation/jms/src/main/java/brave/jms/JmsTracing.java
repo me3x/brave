@@ -30,6 +30,7 @@ import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
+import javax.jms.BytesMessage;
 import javax.jms.Connection;
 import javax.jms.ConnectionFactory;
 import javax.jms.JMSException;
@@ -222,9 +223,39 @@ public final class JmsTracing {
    * if one couldn't be extracted.
    */
   public Span nextSpan(Message message) {
+    // Workaround for #967 bug related to ActiveMQBytesMessage JMS 1.1 implementation where properties cannot
+    // be overwritten. This workaround recreates the message to set it on write-more, so properties
+    // update is allowed.
+    // This conditional code should be removed when new ActiveMQ client release fixes https://issues.apache.org/jira/browse/AMQ-7291
+    if (message instanceof BytesMessage &&
+        message.getClass().getName().equals("org.apache.activemq.command.ActiveMQBytesMessage")) {
+      BytesMessage bytesMessage = (BytesMessage) message;
+      try {
+        byte[] body = new byte[(int) bytesMessage.getBodyLength()];
+        bytesMessage.readBytes(body);
+        bytesMessage.clearBody();
+        bytesMessage.writeBytes(body);
+      } catch (Throwable t) {
+        propagateIfFatal(t);
+        log(t, "error recreating bytes message {0}", message, null);
+      }
+    } // end of initialization of workaround
+
     TraceContextOrSamplingFlags extracted =
       extractAndClearProperties(processorExtractor, message, message);
     Span result = tracer.nextSpan(extracted); // Processor spans use the normal sampler.
+
+    // Continuation of Workaround for #967 bug.
+    // This conditional code should be removed when new ActiveMQ client release fixes https://issues.apache.org/jira/browse/AMQ-7291
+    if (message instanceof BytesMessage &&
+        message.getClass().getName().equals("org.apache.activemq.command.ActiveMQBytesMessage")) {
+      try {
+        ((BytesMessage) message).reset();
+      } catch (Throwable t) {
+        propagateIfFatal(t);
+        log(t, "error setting recreated bytes message {0} to read-only mode", message, null);
+      }
+    } // end of workaround
 
     // When an upstream context was not present, lookup keys are unlikely added
     if (extracted.context() == null && !result.isNoop()) {

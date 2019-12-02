@@ -33,7 +33,6 @@ import javax.jms.TopicSession;
 import javax.jms.TopicSubscriber;
 import org.junit.After;
 import org.junit.Before;
-import org.junit.ComparisonFailure;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TestName;
@@ -102,7 +101,9 @@ public class ITJms_1_1_TracingMessageConsumer extends JmsTest {
     bytesMessage = jms.newBytesMessage("foo");
     String parentId = "463ac35c9f6413ad";
     SETTER.put(message, "b3", parentId + "-" + parentId + "-1");
+    message.setBooleanProperty("custom", true);
     SETTER.put(bytesMessage, "b3", parentId + "-" + parentId + "-1");
+    bytesMessage.setBooleanProperty("custom", true);
     lockMessages();
     return parentId;
   }
@@ -191,10 +192,12 @@ public class ITJms_1_1_TracingMessageConsumer extends JmsTest {
 
   void messageListener_resumesTrace(JMSRunnable send, MessageConsumer messageConsumer)
     throws Exception {
+    final Message[] msgs = {null};
     messageConsumer.setMessageListener(m -> {
         // clearing headers ensures later work doesn't try to use the old parent
         String b3 = GETTER.get(m, "b3");
         tracing.tracer().currentSpanCustomizer().tag("b3", String.valueOf(b3 != null));
+        msgs[0] = m;
       }
     );
 
@@ -207,6 +210,7 @@ public class ITJms_1_1_TracingMessageConsumer extends JmsTest {
     assertThat(listenerSpan.tags())
       .hasSize(1) // no redundant copy of consumer tags
       .containsEntry("b3", "false"); // b3 header not leaked to listener
+    assertThat(msgs[0].getBooleanProperty("custom")).isTrue(); // msg properties are kept.
   }
 
   @Test public void receive_startsNewTrace() throws Exception {
@@ -273,6 +277,7 @@ public class ITJms_1_1_TracingMessageConsumer extends JmsTest {
 
     assertThat(received.getStringProperty("b3"))
       .isEqualTo(parentId + "-" + consumerSpan.id() + "-1");
+    assertThat(received.getBooleanProperty("custom")).isTrue(); // msg properties are kept.
   }
 
   @Test public void receive_customSampler() throws Exception {

@@ -51,7 +51,7 @@ abstract class TracingConsumer<C> {
     if (message == null || tracing.isNoop()) return;
     MessageConsumerRequest request = new MessageConsumerRequest(message, destination(message));
 
-    // Workaround for #967 bug related to ActiveMQBytesMessage implementation where properties cannot
+    // Workaround for #967 bug related to ActiveMQBytesMessage JMS 1.1 implementation where properties cannot
     // be overwritten. This workaround recreates the message to set it on write-more, so properties
     // update is allowed.
     // This conditional code should be removed when new ActiveMQ client release fixes https://issues.apache.org/jira/browse/AMQ-7291
@@ -86,9 +86,7 @@ abstract class TracingConsumer<C> {
     }
     injector.inject(span.context(), request);
 
-    // Workaround for #967 bug related to ActiveMQBytesMessage implementation where properties cannot
-    // be overwritten. This workaround recreates the message to set it on write-more, so properties
-    // update is allowed.
+    // Continuation of Workaround for #967 bug.
     // This conditional code should be removed when new ActiveMQ client release fixes https://issues.apache.org/jira/browse/AMQ-7291
     if (message instanceof BytesMessage &&
         message.getClass().getName().equals("org.apache.activemq.command.ActiveMQBytesMessage")) {
